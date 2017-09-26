@@ -2,7 +2,7 @@
 OBJS = $(patsubst %.c,%.o,$(shell find -name "*.c"))
 #OBJS = main.c
 
-LIBS = -lncurses
+LIBS = -lncurses -lm
 OUT = ./cjed
 CFLAGS = -Wall -O3 -Wno-unused-but-set-variable
 PREFIX = /usr/bin
@@ -31,3 +31,4 @@ debug: $(OUT)
 #  clean
 clean:
 	$(RM) $(OBJS) $%.d
+

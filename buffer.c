@@ -1,6 +1,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <ncurses.h>
+#include <math.h>
 
 #include "buffer.h"
 #include "global.h"
@@ -9,8 +10,6 @@
 //so ijust create my own,
 //SHOULNdt add to much over-head
 //TODO: fix realloc( )
-#pragma GCC push_options
-#pragma GCC optimize ("O0")
 void* my_realloc(void* ptr, size_t orig_size, size_t dest_size) {
 	if (dest_size <= orig_size) return ptr;
 
@@ -21,7 +20,6 @@ void* my_realloc(void* ptr, size_t orig_size, size_t dest_size) {
 
 	return newptr;
 }
-#pragma GCC pop_options
 
 struct line_s* lines_add(struct line_s* where, char* data, int size) {
 	struct line_s* new;
@@ -66,6 +64,8 @@ struct line_s* lines_del(struct line_s* line) {
 
 #define MIN_LINE_SIZE 40
 
+int line_num_offset = 4;
+
 struct buffer_s* buffer_new(FILE* f, char* filename) {
 	struct buffer_s* buf = malloc(sizeof(struct buffer_s));
 	buf->file = f;
@@ -82,14 +82,14 @@ struct buffer_s* buffer_new(FILE* f, char* filename) {
 
 	struct line_s* line = NULL;
 
-	int first_iter = 1;
+	int linecount = 0; //nesencary for line num of set
 
 	while (1) {
 		char* data = malloc(MIN_LINE_SIZE); //INITIAL (mninum) line size
 		size_t n = 0;
 
 		if (getline(&data, &n, buf->file) == -1) {
-			if (!first_iter) break;
+			if (linecount != 0) break;
 
 			//EMPTY FILE.. add empty, line
 			*data = '\0';
@@ -101,14 +101,16 @@ struct buffer_s* buffer_new(FILE* f, char* filename) {
 		memcpy(data2, data, strlen(data)+1);
 		free(data);*/
 		
+		linecount++;
 		line = lines_add(line, data, n);
 
-		if (first_iter) {
+		if (linecount == 1) {
 			//firts interation.- add head
-			first_iter = 0;
 			buf->lines_head = line;
 		}
 	}
+
+	line_num_offset = linecount > 999 ? log10(linecount)+2 : line_num_offset;
 
 	return buf;
 }
@@ -121,9 +123,6 @@ void buffer_destroy(struct buffer_s* buf) {
 
 	free(buf);
 }
-
-
-int line_num_offset = 4;
 
 #define TAB_SIZE 4 //tab size,. in spaces
 
@@ -163,6 +162,8 @@ void buffer_cursor_move(struct buffer_s* buf, WINDOW* win, int dy, int dx) {
 	struct line_s* line = buf->lines_head;
 	// THAT 2-buf->line_cur.. i DONT get whyit work but its magic:
 	for (int i = 2-buf->line_cur; i <= cy && line; i++) line = line ? line->next : NULL;
+
+	if (!line) return;
 	
 	int sign_y = dy/abs(dy);
 
@@ -266,8 +267,8 @@ void buffer_print(struct buffer_s* buf, WINDOW* win) { //prints bufferrfe
 	for (ln = 0; line && ln < h; ln++) {
 		#ifndef NLINE_NUM
 		wattr_colors(win, LINENUM);
-		char fmt[6];
-		snprintf(fmt, sizeof(fmt), "%%-%di ", line_num_offset-1);
+		char fmt[10];
+		snprintf(fmt, sizeof(fmt), "%%-%di|", line_num_offset-1);
 		mvwprintw(win, ln, 0, fmt, ln+buf->line_cur);
 		wattr_colors_off(win, LINENUM);
 		#endif
@@ -282,7 +283,7 @@ void buffer_print(struct buffer_s* buf, WINDOW* win) { //prints bufferrfe
 	//if (ln == 0) buf->line_cur--;
 	while (ln < h) { //fill empty, lines with '~'
 		wmove(win, ln, 0);
-		clrtoeol();
+		wclrtoeol(win);
 		wmove(win, ln++, 0);
 		waddch(win, '~');
 	}
@@ -290,7 +291,39 @@ void buffer_print(struct buffer_s* buf, WINDOW* win) { //prints bufferrfe
 	wmove(win, buf->cy, buf->cx);
 }
 
-int r = 0;
+char* last_search = NULL;
+
+void buffer_search(struct buffer_s* buf, WINDOW* win) {
+	int w,h;
+	getmaxyx(win,h,w);
+	char str[64] = "";
+	
+	wmove(win, h-1,0);
+	wclrtoeol(win);
+	wprintw(win, "SEARCH: ");
+	
+	echo();
+	wgetnstr(win, str, sizeof(str));
+	noecho();
+
+	if (!*str && last_search) {
+		strcpy(str, last_search);
+		free(last_search);
+	}
+	last_search = malloc(strlen(str)+1);
+	strcpy(last_search, str);
+
+	set_status("/%s", str);
+	
+	//SEARCH !!
+	struct line_s* line = buf->lines_head;
+	for (int i = 1; line; (i++, line = line->next)) {
+		if (strstr(line->data, str)) {
+			buf->line_cur = i;
+			break;
+		}
+	}
+}
 
 void buffer_type(struct buffer_s* buf, char c) {
 	buffer_cursor_fix(buf, NULL);
@@ -305,7 +338,6 @@ void buffer_type(struct buffer_s* buf, char c) {
 		
 	if (strlen(line->data)+2 > line->capacity) { //2 for: nul charcter+c
 		#define MIN_REALLOC 10
-		r++;
 		line->data = my_realloc(line->data, line->capacity, line->capacity + MIN_REALLOC);
 		line->capacity += MIN_REALLOC;
 	}
@@ -334,7 +366,7 @@ void buffer_enter(struct buffer_s* buf) {
 
 	if (idx == -1) {
 		char* s = malloc(MIN_LINE_SIZE);
-		*s = '\0';
+		//*s = '\0';
 		lines_add(line, s, MIN_LINE_SIZE);
 		buf->cy--;
 		buf->cx = line_num_offset;
@@ -344,10 +376,17 @@ void buffer_enter(struct buffer_s* buf) {
 	//STRING after enter.. (to split LINE)
 	int size = strlen(line->data)-idx+1;
 	char* after = malloc(size);
-	strncpy(after, line->data+idx, size);
+	
+	//FOR auto tab's
+	int tabs = strcountc(line->data, '\t');
+	int i;
+	for (i=0;i<tabs;i++) after[i] = '\t';
+	after[i] = 0;
+
+	strncpy(after+tabs, line->data+idx, size);
 	line->data[idx] = '\0';
 	lines_add(line, after, size);
-	buf->cx = line_num_offset;
+	buf->cx = line_num_offset+tabs*TAB_SIZE;
 	buf->cy++;
 }
 
@@ -399,17 +438,48 @@ void buffer_erase(struct buffer_s* buf, int is_del) {
 
 	//normal charcrater remove
 	int len = strlen(line->data)+1;
-	buf->cx += (is_del ? 0 : -1) - (line->data[idx] == '\t' ? TAB_SIZE-1 : 0);
+	buf->cx += (is_del ? 0 : -1) * (line->data[idx] == '\t' ? TAB_SIZE : 1);
 	for (int i = idx; i < len ;i++) line->data[i] = line->data[i+1];
 }
 
 void buffer_write(struct buffer_s* buf) {
+	set_status("'%s'", buf->filename);
+
 	struct line_s* line = buf->lines_head;
 	rewind(buf->file);
+	int lines = 0;
+	int bytes = 0;
+	int err = 0;
 	while (line) {
-		fputs(line->data, buf->file);
+		lines++;
+		bytes += strlen(line->data)+1;
+		err = (fputs(line->data, buf->file) == EOF);
 		fputc('\n', buf->file);
 		line = line->next;
 	}
-	fflush(buf->file);
+	if (fflush(buf->file) == 0 && !err)
+		set_status("'%s' %iL, %iC written", buf->filename, lines, bytes);
+	else
+		set_status("'%s' is open in readonly", buf->filename);
+}
+
+void buffer_dosyntax(struct buffer_s* buf) {
+	/*struct line_s* line = buf->lines_head;
+	//TODO decide, if VISIBLE lines or all. lines
+	//get cursor line
+	for (int i = 2-buf->line_cur; i <= buf->cy && line; i++) line = line->next;
+	
+	int c = '\0';
+	char str[20] = "";
+	int stridx = 0;
+	int i = 0;
+	while (1) {
+		c = line->data[i];
+		if (!c) {i = 0; stridx = 0; ; continue}
+		if (isspace(c)) {
+			
+		}
+		i++;
+	}
+*/
 }

@@ -23,6 +23,8 @@ int buf_count = 0;
 
 int current_buf = 0;
 
+char* status_msg = NULL;
+
 int main(int argc, char** argv) {
 	if (argc < 2) {
 		printf(HELPSTRING"\n", argv[0]);
@@ -72,7 +74,13 @@ int main(int argc, char** argv) {
 
 	mmask_t MOUSE_SCROLL_UP = 0;
 	mmask_t MOUSE_SCROLL_DOWN = 0;
-	{ //TODO: auto-dectect mouse scroll. buttons
+	FILE* mfile;
+	mfile = fopen(".cjed_mcfg", "r");
+	if (mfile) {
+		fread(&MOUSE_SCROLL_UP, sizeof(mmask_t), 1, mfile);
+		fread(&MOUSE_SCROLL_DOWN, sizeof(mmask_t), 1, mfile);
+		fclose(mfile);
+	} else {
 		MEVENT ev;
 		
 		mvprintw(0,0, "SCROLL MOUSE UP");
@@ -88,16 +96,37 @@ int main(int argc, char** argv) {
 		refresh();
 		getch();
 		if (getmouse(&ev) == OK) MOUSE_SCROLL_DOWN = ev.bstate;
+
+		mfile = fopen(".cjed_mcfg", "w");
+		if (mfile) {
+			fwrite(&MOUSE_SCROLL_UP, sizeof(mmask_t), 1, mfile);
+			fwrite(&MOUSE_SCROLL_DOWN, sizeof(mmask_t), 1, mfile);
+			fclose(mfile);
+		}
 	}
+
+	WINDOW* win = subwin(stdscr, LINES-1,COLS,0,0);
 
 	//LOOP
 	int running = 1;
-	while (running) {
-		buffer_print(bufs[0], stdscr);
+	while (running) {	
+		if (status_msg) {
+			move(LINES-1, 0);
+			clrtoeol();
+			wattr_colors(stdscr, STATUSMSG);
+			printw(status_msg);
+			wattr_colors_off(stdscr, STATUSMSG);
+		}
 
-		refresh();
+		buffer_print(bufs[0], win);
+		touchwin(stdscr);
+		wrefresh(stdscr);
+
+		int cx,cy;
+		getyx(win, cy,cx);
+		wmove(stdscr, cy,cx);		
 		int c = getch();
-	
+
 		//CTRL + ABCDEFGHIJKLMNOPQRSTUVWXYZ
 		#define CTRL(c) 1+c-'A'
 
@@ -110,13 +139,17 @@ int main(int argc, char** argv) {
 				buffer_write(bufs[current_buf]);
 				break;
 
-			#define ARROW_KEY(n, y, x) case KEY_##n: buffer_cursor_move(bufs[current_buf], stdscr, y, x); break;
+			case CTRL('F'):
+				buffer_search(bufs[current_buf], win);
+				break;
+
+			#define ARROW_KEY(n, y, x) case KEY_##n: buffer_cursor_move(bufs[current_buf], win, y, x); break;
 			ARROW_KEY(UP,   -1, 0);
 			ARROW_KEY(DOWN,  1, 0);
 			ARROW_KEY(LEFT,  0,-1);
 			ARROW_KEY(RIGHT, 0, 1);
-			ARROW_KEY(END, 0, 100);
-			ARROW_KEY(HOME,0,-100);
+			ARROW_KEY(END, 0, 1000);
+			ARROW_KEY(HOME,0,-1000);
 
 			#define SCROLL_SPEED 40
 
@@ -164,6 +197,7 @@ int main(int argc, char** argv) {
 	}
 
 	//cleanup
+	delwin(win);
 	endwin();
 	
 	for (int i = 0; i < buf_count; i++) {
